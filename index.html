@@ -133,7 +133,7 @@
 <script>
 'use strict';
 const $ = id => document.getElementById(id);
-const VERSION = 'V1.1';
+const VERSION = 'V1.2';
 document.getElementById('ver').textContent = VERSION;
 document.title = 'Cartella condivisa ' + VERSION;
 const PREFIX = 'cartella-condivisa-v1-';
@@ -438,9 +438,16 @@ const ICE_NAMES = { checking: 'cerco un percorso di rete', connected: 'percorso 
 
 function setupConn(c) {
   // Se entro 20 secondi il canale non si apre, lo dico chiaramente invece di restare in attesa.
+  const cand = { host: 0, srflx: 0, relay: 0, prflx: 0 };
+  const pc = c.peerConnection;
+  if (pc) {
+    pc.addEventListener('icecandidate', e => { if (e.candidate && e.candidate.type) cand[e.candidate.type] = (cand[e.candidate.type] || 0) + 1; });
+    pc.addEventListener('signalingstatechange', () => log('Segnalazione: ' + pc.signalingState));
+  } else log('Diagnostica: WebRTC non disponibile su questa connessione');
   const timer = setTimeout(() => {
     if (c.open || conn === c) return;
     log('Collegamento diretto non riuscito entro 20 secondi (rete, VPN o firewall).');
+    if (pc) log(`Diagnostica: segnalazione=${pc.signalingState}, rete=${pc.iceConnectionState}, raccolta=${pc.iceGatheringState}, indirizzi locali=${cand.host}, pubblici=${cand.srflx}, relay=${cand.relay}`);
     try { c.close(); } catch {}
     if (!isHost && roomCode && !(conn && conn.open)) {
       setStatus('Collegamento diretto non riuscito: riprovo… (vedi Attività)', 'bad');
@@ -480,17 +487,21 @@ function showRoom() {
 
 function startPeer(id) {
   if (peer) peer.destroy();
-  peer = id ? new Peer(id, { config: ICE }) : new Peer({ config: ICE });
+  const opts = { config: ICE, debug: 2, logFunction: (level, ...rest) => {
+    const text = rest.map(x => (x && x.message) || (typeof x === 'string' ? x : JSON.stringify(x))).join(' ');
+    console.log('[peerjs]', text);
+    if (level <= 2) log('PeerJS: ' + text.slice(0, 300));
+  } };
+  peer = id ? new Peer(id, opts) : new Peer(opts);
   peer.on('open', () => log('Server di collegamento raggiunto'));
   peer.on('disconnected', () => { if (peer && !peer.destroyed) peer.reconnect(); });
   peer.on('error', e => {
+    log('Errore PeerJS (' + e.type + '): ' + (e.message || ''));
     if (e.type === 'peer-unavailable') {
       setStatus('Stanza non trovata: l\'altra persona ha la pagina aperta?', 'bad');
       if (!isHost && roomCode) setTimeout(joinRoom, 5000);
     } else if (e.type === 'unavailable-id') {
       setStatus('Codice già in uso, riprova', 'bad'); leave();
-    } else {
-      log('Errore: ' + (e.message || e.type));
     }
   });
   return peer;
