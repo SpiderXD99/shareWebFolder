@@ -78,7 +78,7 @@
 </head>
 <body>
 <main>
-  <h1>Cartella condivisa</h1>
+  <h1>Cartella condivisa <span id="ver" style="font-size:.9rem;font-weight:500;color:var(--muted)"></span></h1>
   <p class="sub">Due persone, due cartelle sul proprio PC, sincronizzate direttamente da browser a browser.</p>
 
   <div id="unsupported" class="banner hidden"></div>
@@ -129,10 +129,13 @@
   </section>
 </main>
 
-<script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
+<script src="peerjs.min.js"></script>
 <script>
 'use strict';
 const $ = id => document.getElementById(id);
+const VERSION = 'V1.1';
+document.getElementById('ver').textContent = VERSION;
+document.title = 'Cartella condivisa ' + VERSION;
 const PREFIX = 'cartella-condivisa-v1-';
 const CHUNK = 64 * 1024;
 const SKIP = new Set(['desktop.ini', 'Thumbs.db', '.DS_Store']);
@@ -426,8 +429,30 @@ function randomCode() {
   return Array.from(r, b => abc[b % abc.length]).join('');
 }
 
+const ICE = { iceServers: [
+  { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] },
+  { urls: ['turn:eu-0.turn.peerjs.com:3478', 'turn:us-0.turn.peerjs.com:3478'], username: 'peerjs', credential: 'peerjsp' }
+], sdpSemantics: 'unified-plan' };
+const ICE_NAMES = { checking: 'cerco un percorso di rete', connected: 'percorso trovato', completed: 'percorso trovato',
+  failed: 'nessun percorso di rete trovato', disconnected: 'rete interrotta', closed: 'chiuso' };
+
 function setupConn(c) {
+  // Se entro 20 secondi il canale non si apre, lo dico chiaramente invece di restare in attesa.
+  const timer = setTimeout(() => {
+    if (c.open || conn === c) return;
+    log('Collegamento diretto non riuscito entro 20 secondi (rete, VPN o firewall).');
+    try { c.close(); } catch {}
+    if (!isHost && roomCode && !(conn && conn.open)) {
+      setStatus('Collegamento diretto non riuscito: riprovo… (vedi Attività)', 'bad');
+      setTimeout(joinRoom, 3000);
+    }
+  }, 20000);
+  c.on('iceStateChanged', s => {
+    log('Rete: ' + (ICE_NAMES[s] || s));
+    if (s === 'failed') log('I due computer non riescono a raggiungersi direttamente. Cause tipiche: VPN attiva, firewall, rete aziendale o mobile.');
+  });
   c.on('open', () => {
+    clearTimeout(timer);
     if (conn && conn !== c && conn.open) { c.send({ t: 'busy' }); setTimeout(() => c.close(), 500); return; }
     conn = c;
     enqueue(async () => { resetSync(); remoteIndex = null; });
@@ -455,7 +480,8 @@ function showRoom() {
 
 function startPeer(id) {
   if (peer) peer.destroy();
-  peer = id ? new Peer(id) : new Peer();
+  peer = id ? new Peer(id, { config: ICE }) : new Peer({ config: ICE });
+  peer.on('open', () => log('Server di collegamento raggiunto'));
   peer.on('disconnected', () => { if (peer && !peer.destroyed) peer.reconnect(); });
   peer.on('error', e => {
     if (e.type === 'peer-unavailable') {
@@ -478,14 +504,18 @@ function createRoom() {
     showRoom();
     if (!conn) setStatus('In attesa dell\'altra persona…', 'warn');
   });
-  peer.on('connection', setupConn);
+  peer.on('connection', c => { log('Richiesta di collegamento ricevuta'); setStatus('Collegamento in corso…', 'warn'); setupConn(c); });
 }
 
 function joinRoom() {
   if (!roomCode || isHost || (conn && conn.open)) return;
-  const go = () => setupConn(peer.connect(PREFIX + roomCode, { reliable: true }));
+  const go = () => { log('Chiedo il collegamento alla stanza…'); setupConn(peer.connect(PREFIX + roomCode, { reliable: true })); };
   if (peer && !peer.destroyed && peer.open) go();
-  else startPeer().on('open', go);
+  else {
+    startPeer().on('open', go);
+    const p = peer;
+    setTimeout(() => { if (peer === p && !p.open && !p.destroyed) { setStatus('Non raggiungo il server di collegamento (0.peerjs.com)', 'bad'); log('Il server di collegamento non risponde: controlla VPN, firewall o estensioni che bloccano i WebSocket.'); } }, 12000);
+  }
 }
 
 function leave() {
@@ -568,7 +598,9 @@ $('copyLink').onclick = async () => {
 (function () {
   const box = $('unsupported');
   let msg = '';
-  if (!('showDirectoryPicker' in window)) msg = 'Questo browser non permette ai siti di accedere a una cartella. Apri la pagina con Chrome, Edge o Brave su computer.';
+  if (!('showDirectoryPicker' in window)) msg = navigator.brave
+    ? 'Brave blocca l\'accesso alle cartelle. Apri brave://flags/#file-system-access-api, scegli Enabled e riavvia, oppure usa Chrome o Edge.'
+    : 'Questo browser non permette ai siti di accedere a una cartella. Apri la pagina con Chrome o Edge su computer.';
   else if (window.self !== window.top) msg = 'La pagina è incorporata in un altro sito e non può accedere alle cartelle. Aprila in una scheda a parte.';
   if (msg) { box.textContent = msg; box.classList.remove('hidden'); $('pick').disabled = true; }
   if (location.hash.length > 1) $('codeIn').value = location.hash.slice(1);
