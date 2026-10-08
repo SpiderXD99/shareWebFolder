@@ -79,7 +79,7 @@
 <body>
 <main>
   <h1>Cartella condivisa <span id="ver" style="font-size:.9rem;font-weight:500;color:var(--muted)"></span></h1>
-  <p class="sub">Due persone, due cartelle sul proprio PC, sincronizzate direttamente da browser a browser.</p>
+  <p class="sub">Due cartelle su due PC, tenute allineate: direttamente da browser a browser, oppure passando da un repository GitHub privato.</p>
 
   <div id="unsupported" class="banner hidden"></div>
 
@@ -92,13 +92,28 @@
     <p class="hint">Meglio una cartella dedicata. Il sito potrà leggere e scrivere solo lì dentro.</p>
     <label class="check">
       <input type="checkbox" id="propDel">
-      <span>Elimina qui i file che l'altra persona elimina dalla sua cartella
-        <br><span class="hint">Disattivato: i file eliminati dall'altro restano nella tua cartella.</span></span>
+      <span>Propaga le eliminazioni
+        <br><span class="hint">Disattivato: un file eliminato da una parte resta (o viene ripristinato) dall'altra.</span></span>
     </label>
   </section>
 
   <section>
-    <h2><span class="num">2</span> Collegati con l'altra persona</h2>
+    <h2><span class="num">2</span> Collega le due cartelle</h2>
+    <div class="row" style="margin-bottom:12px">
+      <button id="modeP2p">Collegamento diretto</button>
+      <button id="modeGh">Tramite GitHub</button>
+    </div>
+    <div id="ghPane" class="hidden">
+      <div class="row">
+        <input type="text" id="ghRepo" placeholder="utente/repository-privato" autocomplete="off" spellcheck="false" style="letter-spacing:0">
+        <input type="text" id="ghBranch" placeholder="ramo" value="main" autocomplete="off" spellcheck="false" style="letter-spacing:0;flex:0 1 110px">
+        <input type="password" id="ghToken" placeholder="token di accesso" autocomplete="off" style="font:inherit;padding:9px 12px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--text);flex:1 1 180px;min-width:0">
+        <button id="ghStart" class="primary">Avvia</button>
+        <button id="ghStop" class="hidden">Ferma</button>
+      </div>
+      <p class="hint">Usa un repository <b>privato</b> dedicato e un token limitato a quel repository (permesso Contents: lettura e scrittura). Il token resta salvato solo in questo browser. Inserisci gli stessi dati sui due PC: non serve essere collegati nello stesso momento. File fino a 50 MB.</p>
+    </div>
+    <div id="p2pPane">
     <div id="connectUi">
       <div class="row">
         <button id="create">Crea una stanza</button>
@@ -115,7 +130,22 @@
       </div>
       <p class="hint">Manda il codice o il link solo alla persona con cui vuoi condividere: chi lo conosce può collegarsi.</p>
     </div>
+    </div>
     <p style="margin:12px 0 0"><span class="status"><span id="dot" class="dot"></span><span id="status">Non collegato</span></span></p>
+  </section>
+
+  <section>
+    <details id="turnBox">
+      <summary style="cursor:pointer;font-weight:600">Server di relay (TURN) <span id="turnState" class="hint" style="margin:0;font-weight:400"></span></summary>
+      <p class="hint">Serve solo se il collegamento diretto non riesce (reti aziendali, desktop virtuali, alcune reti mobili). I file passano cifrati attraverso il relay. Basta impostarlo su uno dei due lati; resta salvato solo in questo browser.</p>
+      <div class="row" style="margin-top:8px">
+        <input type="text" id="turnUrls" placeholder="turn:host:80, turn:host:443?transport=tcp, turns:host:443?transport=tcp" style="flex-basis:100%;letter-spacing:0">
+        <input type="text" id="turnUser" placeholder="utente" autocomplete="off" style="letter-spacing:0">
+        <input type="password" id="turnPass" placeholder="password" autocomplete="off" style="font:inherit;padding:9px 12px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--text);flex:1 1 180px;min-width:0">
+        <button id="turnSave">Salva</button>
+        <button id="turnClear">Rimuovi</button>
+      </div>
+    </details>
   </section>
 
   <section>
@@ -133,12 +163,13 @@
 <script>
 'use strict';
 const $ = id => document.getElementById(id);
-const VERSION = 'V1.2';
+const VERSION = 'V2.0';
 document.getElementById('ver').textContent = VERSION;
 document.title = 'Cartella condivisa ' + VERSION;
 const PREFIX = 'cartella-condivisa-v1-';
 const CHUNK = 64 * 1024;
-const SKIP = new Set(['desktop.ini', 'Thumbs.db', '.DS_Store']);
+const STATE_FILE = '.cartella-condivisa.json';
+const SKIP = new Set(['desktop.ini', 'Thumbs.db', '.DS_Store', STATE_FILE]);
 
 let dirHandle = null;
 let localIndex = {};          // path -> {s, m}
@@ -429,10 +460,15 @@ function randomCode() {
   return Array.from(r, b => abc[b % abc.length]).join('');
 }
 
-const ICE = { iceServers: [
-  { urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] },
-  { urls: ['turn:eu-0.turn.peerjs.com:3478', 'turn:us-0.turn.peerjs.com:3478'], username: 'peerjs', credential: 'peerjsp' }
-], sdpSemantics: 'unified-plan' };
+function loadTurn() {
+  try { return JSON.parse(localStorage.getItem('turn') || 'null'); } catch { return null; }
+}
+function iceConfig() {
+  const servers = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun.cloudflare.com:3478'] }];
+  const t = loadTurn();
+  if (t && t.urls && t.urls.length) servers.push({ urls: t.urls, username: t.user, credential: t.pass });
+  return { iceServers: servers, sdpSemantics: 'unified-plan' };
+}
 const ICE_NAMES = { checking: 'cerco un percorso di rete', connected: 'percorso trovato', completed: 'percorso trovato',
   failed: 'nessun percorso di rete trovato', disconnected: 'rete interrotta', closed: 'chiuso' };
 
@@ -448,6 +484,8 @@ function setupConn(c) {
     if (c.open || conn === c) return;
     log('Collegamento diretto non riuscito entro 20 secondi (rete, VPN o firewall).');
     if (pc) log(`Diagnostica: segnalazione=${pc.signalingState}, rete=${pc.iceConnectionState}, raccolta=${pc.iceGatheringState}, indirizzi locali=${cand.host}, pubblici=${cand.srflx}, relay=${cand.relay}`);
+    if (pc && !cand.srflx && !cand.relay) log('Questa rete blocca i collegamenti diretti (tipico di reti aziendali e desktop virtuali). Serve un server di relay: vedi "Server di relay (TURN)" qui sopra.');
+    else if (pc && loadTurn() && !cand.relay) log('Il server di relay impostato non risponde da questa rete: controlla indirizzi, utente e password.');
     try { c.close(); } catch {}
     if (!isHost && roomCode && !(conn && conn.open)) {
       setStatus('Collegamento diretto non riuscito: riprovo… (vedi Attività)', 'bad');
@@ -487,7 +525,7 @@ function showRoom() {
 
 function startPeer(id) {
   if (peer) peer.destroy();
-  const opts = { config: ICE, debug: 2, logFunction: (level, ...rest) => {
+  const opts = { config: iceConfig(), debug: 2, logFunction: (level, ...rest) => {
     const text = rest.map(x => (x && x.message) || (typeof x === 'string' ? x : JSON.stringify(x))).join(' ');
     console.log('[peerjs]', text);
     if (level <= 2) log('PeerJS: ' + text.slice(0, 300));
@@ -508,6 +546,7 @@ function startPeer(id) {
 }
 
 function createRoom() {
+  if (gh.running) ghStop();
   if (typeof Peer === 'undefined') { setStatus('Libreria di collegamento non caricata: controlla la connessione', 'bad'); return; }
   isHost = true; roomCode = randomCode();
   setStatus('Creo la stanza…', 'warn');
@@ -544,9 +583,33 @@ function leave() {
 let renderTimer = null;
 function renderSoon() { if (!renderTimer) renderTimer = setTimeout(() => { renderTimer = null; render(); }, 250); }
 
+function renderGh() {
+  const list = $('list');
+  const paths = [...new Set([...Object.keys(localIndex), ...Object.keys(gh.remote)])].sort((a, b) => a.localeCompare(b, 'it'));
+  $('count').textContent = paths.length ? `· ${paths.length}` : '';
+  list.textContent = '';
+  if (!paths.length) { const e = document.createElement('div'); e.className = 'empty'; e.textContent = 'Nessun file.'; list.append(e); return; }
+  const files = (gh.state && gh.state.files) || {};
+  for (const p of paths.slice(0, 500)) {
+    const st = files[p], rem = gh.remote[p];
+    let text = gh.act[p], cls = 'warn';
+    if (!text) {
+      if (localIndex[p] && rem && st && st.sha === rem.sha) { text = 'sincronizzato'; cls = 'ok'; }
+      else if (localIndex[p] && localIndex[p].s > GH_MAX) { text = 'troppo grande'; cls = ''; }
+      else { text = 'in attesa'; cls = ''; }
+    }
+    const row = document.createElement('div'); row.className = 'item';
+    const a = document.createElement('span'); a.className = 'p'; a.textContent = p;
+    const b = document.createElement('span'); b.className = 's ' + cls; b.textContent = text;
+    row.append(a, b); list.append(row);
+  }
+  if (paths.length > 500) { const e = document.createElement('div'); e.className = 'empty'; e.textContent = `…e altri ${paths.length - 500} file`; list.append(e); }
+}
+
 function render() {
   const list = $('list');
   if (!dirHandle) return;
+  if (gh.running) return renderGh();
   const connected = !!(conn && conn.open && remoteIndex);
   const paths = [...new Set([...Object.keys(localIndex), ...(remoteIndex ? Object.keys(remoteIndex) : [])])].sort((a, b) => a.localeCompare(b, 'it'));
   $('count').textContent = paths.length ? `· ${paths.length}` : '';
@@ -583,17 +646,39 @@ $('pick').onclick = async () => {
       $('folderName').textContent = 'Cartella: ' + h.name;
       $('pick').textContent = 'Cambia cartella…';
       log(`Cartella selezionata: "${h.name}"`);
-      await tick();
+      gh.state = null; gh.act = {}; gh.dirty = false;
+      if (gh.running) { setStatus('GitHub: controllo…', 'warn'); ghRun(); }
+      else await tick();
     });
   } catch (e) {
     if (e.name !== 'AbortError') log('Selezione cartella non riuscita: ' + e.message);
   }
 };
+function showTurn() {
+  const t = loadTurn();
+  $('turnState').textContent = t ? '· impostato' : '· non impostato';
+  if (t) { $('turnUrls').value = t.urls.join(', '); $('turnUser').value = t.user || ''; $('turnPass').value = t.pass || ''; }
+}
+$('turnSave').onclick = () => {
+  const urls = $('turnUrls').value.split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
+  if (!urls.length || !urls.every(u => /^turns?:[^\s]+$/i.test(u))) { log('Indirizzi del relay non validi: devono iniziare con turn: o turns:'); return; }
+  try { localStorage.setItem('turn', JSON.stringify({ urls, user: $('turnUser').value.trim(), pass: $('turnPass').value })); }
+  catch { log('Non riesco a salvare le impostazioni in questo browser'); return; }
+  showTurn();
+  log('Server di relay salvato. Esci dalla stanza e ricollegati per usarlo.');
+};
+$('turnClear').onclick = () => {
+  try { localStorage.removeItem('turn'); } catch {}
+  $('turnUrls').value = $('turnUser').value = $('turnPass').value = '';
+  showTurn(); log('Server di relay rimosso');
+};
+showTurn();
 $('create').onclick = createRoom;
 $('join').onclick = () => {
   const v = $('codeIn').value.trim().toLowerCase().replace(/^.*#/, '');
   if (!/^[a-z0-9]{6,20}$/.test(v)) { setStatus('Codice non valido', 'bad'); return; }
   if (typeof Peer === 'undefined') { setStatus('Libreria di collegamento non caricata: controlla la connessione', 'bad'); return; }
+  if (gh.running) ghStop();
   isHost = false; roomCode = v; showRoom();
   setStatus('Mi collego…', 'warn'); joinRoom();
 };
@@ -604,6 +689,266 @@ $('copyLink').onclick = async () => {
   catch { prompt('Copia questo link:', url); }
   setTimeout(() => $('copyLink').textContent = 'Copia link', 2000);
 };
+
+
+/* ---------- modalità GitHub ---------- */
+const GH_MAX = 50 * 1024 * 1024;
+const GH_IGNORE = new Set([STATE_FILE, '.sync-init']);
+const gh = { running: false, cfg: null, state: null, dirty: false, etag: null, head: null, treeSha: null,
+  remote: {}, act: {}, warned: new Set(), lastErr: '', beat: 0 };
+
+function ghLoadCfg() { try { return JSON.parse(localStorage.getItem('gh') || 'null'); } catch { return null; } }
+async function ghApi(path, o = {}) {
+  const headers = { Authorization: 'Bearer ' + gh.cfg.token, Accept: o.raw ? 'application/vnd.github.raw+json' : 'application/vnd.github+json' };
+  if (o.body) headers['Content-Type'] = 'application/json';
+  if (o.etag) headers['If-None-Match'] = o.etag;
+  return fetch('https://api.github.com/repos/' + gh.cfg.repo + path,
+    { method: o.method || 'GET', cache: 'no-store', headers, body: o.body ? JSON.stringify(o.body) : undefined });
+}
+async function ghFail(r) {
+  let m = ''; try { m = (await r.json()).message || ''; } catch {}
+  const e = new Error(r.status === 401 ? 'token non valido o scaduto'
+    : r.status === 403 ? 'accesso negato o limite di richieste raggiunto (' + m + ')'
+    : `GitHub ${r.status}: ${m}`);
+  e.status = r.status; return e;
+}
+async function ghJson(path, o) { const r = await ghApi(path, o); if (!r.ok) throw await ghFail(r); return r.json(); }
+async function gitSha(file) {
+  const buf = await new Blob([`blob ${file.size}\0`, file]).arrayBuffer();
+  const d = new Uint8Array(await crypto.subtle.digest('SHA-1', buf));
+  return Array.from(d, b => b.toString(16).padStart(2, '0')).join('');
+}
+function toBase64(file) {
+  return new Promise((res, rej) => {
+    const fr = new FileReader();
+    fr.onload = () => { const s = fr.result; res(s.slice(s.indexOf(',') + 1)); };
+    fr.onerror = () => rej(fr.error);
+    fr.readAsDataURL(file);
+  });
+}
+function ghWarn(key, msg) { if (!gh.warned.has(key)) { gh.warned.add(key); log(msg); } }
+const baseName = p => p.slice(p.lastIndexOf('/') + 1);
+
+async function ghLoadState() {
+  const key = gh.cfg.repo + '@' + gh.cfg.branch;
+  try {
+    const f = await (await dirHandle.getFileHandle(STATE_FILE)).getFile();
+    const j = JSON.parse(await f.text());
+    if (j && j.key === key && j.files && typeof j.files === 'object') return j;
+  } catch {}
+  return { v: 1, key, files: {} };
+}
+async function ghSaveState() {
+  if (!gh.dirty) return;
+  const w = await (await dirHandle.getFileHandle(STATE_FILE, { create: true })).createWritable();
+  await w.write(JSON.stringify(gh.state));
+  await w.close();
+  gh.dirty = false;
+}
+
+// Legge l'elenco dei file nel repository. Con l'ETag, se nulla è cambiato la richiesta non consuma quota.
+async function ghLoadRemote() {
+  const r = await ghApi('/git/ref/heads/' + gh.cfg.branch, { etag: gh.etag });
+  if (r.status === 304) return;
+  if (r.status === 409) {           // repository vuoto: lo inizializzo
+    const init = await ghApi('/contents/.sync-init', { method: 'PUT', body: { message: 'Inizializzazione cartella condivisa', content: btoa('cartella condivisa\n') } });
+    if (!init.ok) throw await ghFail(init);
+    log('Repository vuoto: inizializzato');
+    throw new Error('repository appena inizializzato, riprovo tra poco');
+  }
+  if (r.status === 404) {
+    const repo = await ghApi('');
+    throw new Error(repo.ok ? `il ramo "${gh.cfg.branch}" non esiste nel repository` : 'repository non trovato, oppure il token non ha accesso');
+  }
+  if (!r.ok) throw await ghFail(r);
+  const ref = await r.json();
+  const commit = await ghJson('/git/commits/' + ref.object.sha);
+  const tree = await ghJson('/git/trees/' + commit.tree.sha + '?recursive=1');
+  if (tree.truncated) ghWarn('trunc', 'Il repository ha troppi file: l\'elenco è incompleto, la sincronizzazione può essere parziale.');
+  const remote = {};
+  for (const e of tree.tree) {
+    if (e.type !== 'blob' || e.mode === '120000' || !validPath(e.path) || GH_IGNORE.has(baseName(e.path))) continue;
+    remote[e.path] = { sha: e.sha, size: e.size, mode: e.mode };
+  }
+  gh.remote = remote; gh.head = ref.object.sha; gh.treeSha = commit.tree.sha; gh.etag = r.headers.get('ETag');
+}
+
+async function ghCycle() {
+  if (!gh.running || !dirHandle) return;
+  if (!gh.state) gh.state = await ghLoadState();
+  const idx = {};
+  try { await walk(dirHandle, '', idx); }
+  catch (e) { setStatus('Non riesco a leggere la cartella', 'bad'); log('Non riesco a leggere la cartella: ' + e.message); return; }
+  localIndex = idx;
+  const files = gh.state.files, skip = new Set();
+
+  for (const [p, m] of Object.entries(localIndex)) {
+    if (m.s > GH_MAX) { skip.add(p); ghWarn('big:' + p, `"${p}" supera i 50 MB e non viene sincronizzato`); continue; }
+    const st = files[p];
+    if (!st || st.s !== m.s || st.m !== m.m || !st.sha) {
+      const f = await (await fileHandle(p, false)).getFile();
+      files[p] = { s: f.size, m: f.lastModified, sha: await gitSha(f), base: st ? st.base : null };
+      localIndex[p] = { s: f.size, m: f.lastModified };
+      gh.dirty = true;
+    }
+  }
+  await ghLoadRemote();
+
+  const down = [], up = [], delLocal = [], delRemote = [], conflict = [];
+  const del = $('propDel').checked;
+  for (const p of new Set([...Object.keys(localIndex), ...Object.keys(gh.remote), ...Object.keys(files)])) {
+    if (skip.has(p)) continue;
+    const st = files[p], rem = gh.remote[p];
+    if (rem && rem.size > GH_MAX) { ghWarn('rbig:' + p, `"${p}" nel repository supera i 50 MB e non viene scaricato`); continue; }
+    const L = localIndex[p] ? st.sha : null, R = rem ? rem.sha : null, B = (st && st.base) || null;
+    if (L === R) {
+      if (!L) { delete files[p]; gh.dirty = true; }
+      else if (st.base !== L) { st.base = L; gh.dirty = true; }
+    } else if (L === B) {
+      if (R) down.push(p);
+      else if (del) delLocal.push(p);
+      else { st.base = null; gh.dirty = true; up.push(p); }
+    } else if (R === B) {
+      if (L) up.push(p);
+      else if (del) delRemote.push(p);
+      else down.push(p);
+    } else if (!L) down.push(p);
+    else if (!R) up.push(p);
+    else conflict.push(p);
+  }
+
+  gh.act = {};
+  for (const p of down) gh.act[p] = 'da scaricare';
+  for (const p of conflict) gh.act[p] = 'conflitto';
+  for (const p of up) gh.act[p] = 'da caricare';
+  for (const p of delLocal) gh.act[p] = 'da eliminare qui';
+  for (const p of delRemote) gh.act[p] = 'da eliminare online';
+  const todo = down.length + up.length + delLocal.length + delRemote.length + conflict.length;
+  if (todo) { setStatus(`GitHub: sincronizzo ${todo} file…`, 'warn'); render(); }
+
+  for (const p of conflict) await conflictCopy(p);
+  for (const p of [...conflict, ...down]) {
+    const sha = gh.remote[p].sha;
+    const r = await ghApi('/git/blobs/' + sha, { raw: true });
+    if (!r.ok) throw await ghFail(r);
+    const fh = await fileHandle(p, true);
+    const w = await fh.createWritable();
+    try { await w.write(await r.blob()); await w.close(); }
+    catch (e) { await w.abort().catch(() => {}); throw e; }
+    const f = await fh.getFile();
+    files[p] = { s: f.size, m: f.lastModified, sha, base: sha };
+    localIndex[p] = { s: f.size, m: f.lastModified };
+    gh.dirty = true; delete gh.act[p];
+    log(`Scaricato "${p}" (${fmtSize(f.size)})`); renderSoon();
+  }
+  for (const p of delLocal) {
+    await removeLocal(p);
+    delete files[p]; delete localIndex[p]; delete gh.act[p]; gh.dirty = true;
+    log(`Eliminato "${p}" (eliminato online)`);
+  }
+  await ghSaveState();
+
+  if (up.length || delRemote.length) {
+    const entries = [], done = [];
+    let bytes = 0;
+    for (const p of up) {
+      if (done.length >= 40 || bytes > 60 * 1024 * 1024) break;   // il resto al prossimo giro
+      const f = await (await fileHandle(p, false)).getFile();
+      if (f.size > GH_MAX) continue;
+      const blob = await ghJson('/git/blobs', { method: 'POST', body: { content: await toBase64(f), encoding: 'base64' } });
+      const mode = (gh.remote[p] && gh.remote[p].mode) || '100644';
+      entries.push({ path: p, mode, type: 'blob', sha: blob.sha });
+      done.push({ p, s: f.size, m: f.lastModified, sha: blob.sha, mode });
+      bytes += f.size;
+      gh.act[p] = 'in invio…'; renderSoon();
+    }
+    for (const p of delRemote) entries.push({ path: p, mode: '100644', type: 'blob', sha: null });
+    if (entries.length) {
+      const n = done.length + delRemote.length;
+      const tree = await ghJson('/git/trees', { method: 'POST', body: { base_tree: gh.treeSha, tree: entries } });
+      const commit = await ghJson('/git/commits', { method: 'POST', body: { message: `Sincronizzazione: ${n} file`, tree: tree.sha, parents: [gh.head] } });
+      try {
+        await ghJson('/git/refs/heads/' + gh.cfg.branch, { method: 'PATCH', body: { sha: commit.sha } });
+      } catch (e) {
+        gh.etag = null;
+        if (e.status === 422) throw new Error('il repository è cambiato nel frattempo, riprovo');
+        throw e;
+      }
+      gh.head = commit.sha; gh.treeSha = tree.sha; gh.etag = null;
+      for (const d of done) {
+        gh.remote[d.p] = { sha: d.sha, size: d.s, mode: d.mode };
+        files[d.p] = { s: d.s, m: d.m, sha: d.sha, base: d.sha };
+        delete gh.act[d.p];
+        log(`Caricato "${d.p}" (${fmtSize(d.s)})`);
+      }
+      for (const p of delRemote) { delete gh.remote[p]; delete files[p]; delete gh.act[p]; log(`Eliminato online "${p}"`); }
+      gh.dirty = true;
+      await ghSaveState();
+    }
+  }
+  gh.lastErr = '';
+  const left = Object.keys(gh.act).length;
+  setStatus(left ? `GitHub: restano ${left} file, continuo…` : 'GitHub: sincronizzato · ' + new Date().toLocaleTimeString('it-IT'), left ? 'warn' : 'ok');
+  render();
+}
+
+function ghRun() {
+  return enqueue(async () => {
+    try { await ghCycle(); }
+    catch (e) {
+      const m = e.message || String(e);
+      setStatus('GitHub: ' + m, 'bad');
+      if (m !== gh.lastErr) { gh.lastErr = m; log('GitHub: ' + m); }
+      gh.etag = null;
+    }
+  });
+}
+
+function ghStart() {
+  const repo = $('ghRepo').value.trim().replace(/^https?:\/\/github\.com\//i, '').replace(/\.git$/i, '').replace(/\/+$/, '');
+  const branch = $('ghBranch').value.trim() || 'main';
+  const token = $('ghToken').value.trim();
+  if (!/^[\w.-]+\/[\w.-]+$/.test(repo)) { setStatus('Repository non valido: usa la forma utente/nome', 'bad'); return; }
+  if (!/^[\w.\/-]+$/.test(branch)) { setStatus('Nome del ramo non valido', 'bad'); return; }
+  if (!token) { setStatus('Inserisci il token', 'bad'); return; }
+  if (roomCode) leave();
+  gh.cfg = { repo, branch, token };
+  try { localStorage.setItem('gh', JSON.stringify(gh.cfg)); } catch {}
+  Object.assign(gh, { running: true, state: null, dirty: false, etag: null, remote: {}, act: {}, lastErr: '' });
+  gh.warned.clear();
+  $('ghStart').classList.add('hidden'); $('ghStop').classList.remove('hidden');
+  for (const id of ['ghRepo', 'ghBranch', 'ghToken']) $(id).disabled = true;
+  log(`Sincronizzazione con GitHub avviata (${repo}, ramo ${branch})`);
+  if (!dirHandle) setStatus('GitHub: scegli una cartella per iniziare', 'warn');
+  else { setStatus('GitHub: controllo…', 'warn'); ghRun(); }
+}
+function ghStop() {
+  gh.running = false; gh.act = {};
+  $('ghStart').classList.remove('hidden'); $('ghStop').classList.add('hidden');
+  for (const id of ['ghRepo', 'ghBranch', 'ghToken']) $(id).disabled = false;
+  setStatus('Non collegato'); log('Sincronizzazione con GitHub fermata'); render();
+}
+function setMode(m) {
+  if (m !== 'gh' && gh.running) ghStop();
+  if (m === 'gh' && roomCode) leave();
+  $('p2pPane').classList.toggle('hidden', m === 'gh');
+  $('ghPane').classList.toggle('hidden', m !== 'gh');
+  $('turnBox').parentElement.classList.toggle('hidden', m === 'gh');
+  $('modeP2p').classList.toggle('primary', m !== 'gh');
+  $('modeGh').classList.toggle('primary', m === 'gh');
+  try { localStorage.setItem('mode', m); } catch {}
+}
+$('modeP2p').onclick = () => setMode('p2p');
+$('modeGh').onclick = () => setMode('gh');
+$('ghStart').onclick = ghStart;
+$('ghStop').onclick = ghStop;
+(function () {
+  const c = ghLoadCfg();
+  if (c) { $('ghRepo').value = c.repo || ''; $('ghBranch').value = c.branch || 'main'; $('ghToken').value = c.token || ''; }
+  let m = 'p2p'; try { m = localStorage.getItem('mode') || 'p2p'; } catch {}
+  if (location.hash.length > 1) m = 'p2p';
+  setMode(m);
+})();
 
 // Controlli di compatibilità
 (function () {
@@ -620,6 +965,12 @@ $('copyLink').onclick = async () => {
 let tickQueued = false;
 setInterval(() => {
   if (tickQueued || !dirHandle) return;
+  if (gh.running) {                       // in modalità GitHub: un controllo ogni 12 secondi
+    if (++gh.beat % 4) return;
+    tickQueued = true;
+    ghRun().finally(() => { tickQueued = false; });
+    return;
+  }
   tickQueued = true;
   enqueue(async () => { try { await tick(); } finally { tickQueued = false; } });
 }, 3000);
